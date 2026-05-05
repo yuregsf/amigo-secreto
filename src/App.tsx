@@ -1,6 +1,14 @@
 import { useEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } from 'react';
 import './App.css'
 
+declare global {
+  interface Window {
+    pendo?: {
+      track: (eventName: string, properties?: Record<string, unknown>) => void;
+    };
+  }
+}
+
 type Pair = {
   giver: string;
   receiver: string;
@@ -13,6 +21,8 @@ function App() {
   const [pairs, setPairs] = useState<Pair[]>([]);
   const [password, setPassword] = useState('');
   const [decryptedReceiver, setDecryptedReceiver] = useState<string | null>(null);
+  const [copiedLinks, setCopiedLinks] = useState<Set<string>>(new Set());
+  const distributionStartTime = useRef<number | null>(null);
 
   const urlParams = new URLSearchParams(window.location.search);
   const encryptedReceiver = urlParams.get('receiver');
@@ -108,6 +118,7 @@ function App() {
   }
 
   const handeShuffle = () => {
+    const hadEmptyNames = participants.some(p => p === '');
     const shuffled = [...participants].filter(p => p !== '').sort(() => Math.random() - 0.5);
     const pairs =
       shuffled.map((participant, index) => {
@@ -117,6 +128,14 @@ function App() {
       });
 
     setPairs(pairs);
+    setCopiedLinks(new Set());
+    distributionStartTime.current = Date.now();
+
+    window.pendo?.track("draw_shuffle_completed", {
+      participant_count: shuffled.length,
+      pairs_generated: pairs.length,
+      had_empty_names_filtered: hadEmptyNames,
+    });
   }
 
   const handleDecrypt = () => {
@@ -124,16 +143,47 @@ function App() {
       try {
         const decrypted = decrypt(encryptedReceiver, password);
         setDecryptedReceiver(decrypted);
+
+        window.pendo?.track("secret_reveal_succeeded", {
+          password_length: password.length,
+          encrypted_param_length: encryptedReceiver.length,
+        });
       } catch (error) {
         alert('Senha incorreta ou dados inválidos');
+
+        window.pendo?.track("secret_reveal_failed", {
+          error_message: error instanceof Error ? error.message.substring(0, 100) : "unknown",
+          encrypted_param_length: encryptedReceiver.length,
+          password_length: password.length,
+        });
       }
     }
   }
 
-  const handleCopyToClipboard = (link: string, password: string) => {
+  const handleCopyToClipboard = (giver: string, link: string, password: string) => {
     const text = `Para revelar seu amigo secreto, entre no link e utilize a senha *${password}*:\n\nLINK: ${link}`;
     navigator.clipboard.writeText(text).then(() => {
       alert('Copiado para a área de transferência!');
+
+      window.pendo?.track("reveal_link_copied", {
+        giver_name: giver,
+        link_length: link.length,
+      });
+
+      const updatedCopied = new Set(copiedLinks).add(giver);
+      setCopiedLinks(updatedCopied);
+
+      if (pairs.length > 0 && updatedCopied.size === pairs.length) {
+        const elapsed = distributionStartTime.current
+          ? Math.round((Date.now() - distributionStartTime.current) / 1000)
+          : null;
+
+        window.pendo?.track("all_links_distributed", {
+          total_participants: pairs.length,
+          total_links_copied: updatedCopied.size,
+          ...(elapsed !== null && { time_to_distribute_seconds: elapsed }),
+        });
+      }
     });
   }
 
@@ -201,7 +251,7 @@ function App() {
               {pairs.map(({ giver, receiver, password }) => (
                 <li key={giver} className='items-center mb-2'>
                   <span>{giver}:</span>
-                  <button type="button" onClick={() => handleCopyToClipboard(receiver, password)}> 📋 </button>
+                  <button type="button" onClick={() => handleCopyToClipboard(giver, receiver, password)}> 📋 </button>
                 </li>
               ))}
             </ul>
